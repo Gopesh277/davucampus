@@ -1,0 +1,40 @@
+# Secrets & environment (never commit real values; .env.example is fine)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local databases & runtime data
+*.db
+*.sqlite
+*.sqlite3
+pgdata/
+
+# Uploaded / exported Excel files (real student & faculty data). Demo files in demo_data/ are kept.
+*.xlsx
+!demo_data/*.xlsx
+~$*.xlsx
+
+# Node (only used for local testing)
+node_modules/
+
+# Logs
+*.log
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
