@@ -5,7 +5,7 @@ async function api(p,o={}){const h={...(tok&&{Authorization:'Bearer '+tok})};if(
  const j=await r.json().catch(()=>({}));if(!r.ok){const d=j.detail;throw Error(typeof d=='string'?d:(d?.message+'\n'+(d?.errors||[]).join('\n')))}return j}
 function out(){sessionStorage.clear();tok=role=null;boot()}
 $('#logoutBtn').onclick=out;
-function brand(dept){$('#deptHeading').textContent=dept||'Student Timetable Portal';$('#logoutBtn').hidden=!dept;$('#pwBtn').hidden=!(dept&&role=='admin')}
+function brand(dept){$('#deptHeading').textContent=dept||'Campus Online';$('#logoutBtn').hidden=!dept;$('#pwBtn').hidden=!(dept&&role=='admin')}
 $('#pwBtn').onclick=()=>{const d=$('#dlg');d.innerHTML=`<h2>Change password</h2><form id="pf"><label for="p0">Current password</label><input id="p0" type="password" autocomplete="current-password" required>
  <label for="p1">New password (at least 8 characters)</label><input id="p1" type="password" autocomplete="new-password" minlength="8" required>
  <label for="p2">Confirm new password</label><input id="p2" type="password" autocomplete="new-password" minlength="8" required><div class="err" id="pe"></div>
@@ -14,22 +14,23 @@ $('#pwBtn').onclick=()=>{const d=$('#dlg');d.innerHTML=`<h2>Change password</h2>
   if($('#p1').value!=$('#p2').value){m.textContent='The new passwords do not match';return}
   try{await api('/admin/password',{method:'POST',json:{current:$('#p0').value,new:$('#p1').value}});m.className='ok';m.textContent='Password updated.';setTimeout(()=>d.close(),1200)}catch(x){m.textContent=x.message}};d.showModal()};
 const board=(eyebrow,title,sub,stats)=>`<div class="board"><div class="board-top"><div><p class="board-eyebrow">${esc(eyebrow)}</p><h2 class="board-title">${esc(title)}</h2><p class="board-sub">${esc(sub)}</p></div>
- <div class="board-stats">${stats.map(([n,l])=>`<div class="stat"><div class="stat-num">${esc(n)}</div><div class="stat-label">${esc(l)}</div></div>`).join('')}</div></div></div>`;
-async function boot(){brand(sessionStorage.dept);tok?(role=='admin'?adminView():studentView()):loginView()}
+ <div class="board-stats" style="--n:${stats.length}">${stats.map(([n,l])=>`<div class="stat"><div class="stat-num">${esc(n)}</div><div class="stat-label">${esc(l)}</div></div>`).join('')}</div></div></div>`;
+async function boot(){brand(sessionStorage.dept);tok?(role=='dean'?deanView():role=='admin'?adminView():studentView()):loginView()}
 async function loginView(){brand('');const ds=await api('/departments').catch(()=>[]);
- $('#app').innerHTML=`<div class="panel-card login-card"><h2>Sign in</h2><p class="mute">Choose your department and sign in with your registration number.</p>
- <form id="f"><label for="d">Department</label><select id="d" required><option value="">Select department</option>${ds.map(d=>`<option value="${esc(d.code)}">${esc(d.name)}</option>`).join('')}</select>
- <label for="u">Registration number</label><input id="u" autocomplete="username" required>
+ $('#app').innerHTML=`<div class="panel-card login-card"><h2>Sign in</h2><p class="mute">Choose your department and sign in. The Dean’s Office signs in with its own username and needs no department.</p>
+ <form id="f"><label for="d">Department</label><select id="d"><option value="">Select department</option>${ds.map(d=>`<option value="${esc(d.code)}">${esc(d.name)}</option>`).join('')}</select>
+ <label for="u">Registration no. / Employee ID / Username</label><input id="u" autocomplete="username" required>
  <label for="p">Password</label><input id="p" type="password" autocomplete="current-password" required>
  <p class="mute" style="margin:10px 0 0">Students: your password is your registration number.</p>
  <button class="btn">Sign in</button><div class="err" id="e"></div></form></div>`;
  $('#f').onsubmit=async e=>{e.preventDefault();try{const r=await api('/login',{method:'POST',json:{dept:$('#d').value,username:$('#u').value,password:$('#p').value}});
   tok=sessionStorage.tok=r.token;role=sessionStorage.role=r.role;sessionStorage.dept=r.dept;boot()}catch(x){$('#e').textContent=x.message}}}
+const nice=n=>n&&n==n.toUpperCase()&&/[A-Z]/.test(n)?n.toLowerCase().replace(/(^|[\s.])([a-z])/g,(m,p,c)=>p+c.toUpperCase()):n;
 const f12=t=>t?`${(+t.split(':')[0]%12)||12}:${t.split(':')[1]}`:'';
-const noticeHtml=n=>`<div class="notice ${n.pinned?'pin':''}"><time>${esc(n.posted)}</time><b>${n.pinned?'📌 ':''}${esc(n.title)}</b>${n.body?`<p>${esc(n.body)}</p>`:''}</div>`;
+const noticeHtml=n=>`<div class="notice ${n.pinned?'pin':''}"><time>${esc(n.posted)}</time><b>${n.pinned?'📌 ':''}${n.uni?'<span class="uni-tag">Dean’s Office</span>':''}${esc(n.title)}</b>${n.body?`<p>${esc(n.body)}</p>`:''}</div>`;
 async function studentView(){let t;try{t=await api('/timetable')}catch{return}
  const fac=t.role=='faculty',S=t.slots,today=(new Date().getDay()+6)%7,tds=S.filter(s=>s.day==today);window.S=S;window.FAC=fac;window.T=t;
- $('#app').innerHTML=board(fac?`Faculty${t.info?.designation?' · '+t.info.designation:''}`:`Section ${t.section||'—'}`,`Welcome, ${t.name}`,
+ $('#app').innerHTML=board(fac?`Faculty${t.info?.designation?' · '+t.info.designation:''}`:`Section ${t.section||'—'}`,`Welcome, ${nice(t.name)}`,
   fac?'Your teaching schedule, assignments and syllabus progress.':'Your timetable, assignments and syllabus covered.',
   [[S.length,'Periods / week'],[fac?new Set(S.map(s=>s.section)).size:new Set(S.map(s=>s.subject)).size,fac?'Classes':'Subjects'],[tds.length,'Today']])+
  (t.notices.length?`<h2 class="section-h">Notice board</h2><div class="notices">${t.notices.map(noticeHtml).join('')}</div>`:'')+
@@ -83,12 +84,13 @@ function chatInit(){const add=(t,c)=>{const m=document.createElement('div');m.cl
  $('#chatbtn').onclick=()=>{const o=$('#chat').classList.toggle('open');$('#chatbtn').setAttribute('aria-expanded',o);o&&$('#ci').focus()};
  const send=async q=>{if(!q.trim())return;add(q,'me');try{add((await api('/chat',{method:'POST',json:{message:q}})).reply,'bot')}catch(e){add(e.message,'bot')}};
  $('#cf').onsubmit=e=>{e.preventDefault();send($('#ci').value);$('#ci').value=''};document.querySelectorAll('.chips button').forEach(b=>b.onclick=()=>send(b.textContent))}
-async function adminView(){const st=await api('/admin/stats').catch(()=>({})),ns=await api('/admin/announcements').catch(()=>[]);
+async function adminView(){const st=await api('/admin/stats').catch(()=>({})),ns=await api('/admin/announcements').catch(()=>[]),un=await api('/admin/university-notices').catch(()=>[]);
  const up=(t,hint,kind,extra='')=>`<div class="panel-card"><h2>${t}</h2><p class="mute">${hint}</p><p><a href="#" onclick="tpl('${kind}');return false">↓ Download Excel template</a></p>
  <form data-k="${kind}"><input type="file" accept=".xlsx" required aria-label="${t}">${extra}<p><button class="btn btn-gold">↑ Upload</button></p><div class="msg"></div></form></div>`;
- const rep=l=>`<label style="font-weight:400"><input type="checkbox" name="replace" style="width:auto"> ${l}</label>`;
+ const rep=l=>`<label class="chk"><input type="checkbox" name="replace"> ${l}</label>`;
  $('#app').innerHTML=board('Department admin','Manage timetable, people & notices','Upload everything from Excel. Students and faculty sign in with their Reg No / Employee ID (password is the same).',
   [[st.students??'–','Students'],[st.faculty??'–','Faculty'],[st.sections??'–','Classes'],[st.notices??'–','Notices']])+
+ (un.length?`<h2 class="section-h">From the Dean’s Office</h2><div class="notices">${un.map(n=>noticeHtml({...n,uni:true})).join('')}</div>`:'')+
  `<div class="two">${up('Class timetable','Upload the scheduler’s exported .xlsx (sheet “Master”). Optional “Rooms” sheet adds building/floor. Replaces the current timetable.','timetable')}
  ${up('Students (class-wise)','Reg No, Name, Section (same text as in the timetable), optional Group.','students',rep('Remove students not in this file'))}
  ${up('Faculty list & info','Faculty Name, Employee ID, Nature of Appointment, Email, Phone, Cabin — or your teaching-load register. Creates faculty logins.','faculty',rep('Remove faculty logins not in this file'))}

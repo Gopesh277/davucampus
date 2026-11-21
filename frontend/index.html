@@ -3,12 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DAV University · Student Timetable Portal</title>
+<title>DAV University · Campus Online</title>
 <link rel="icon" href="assets/logo.jpg" type="image/jpeg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=7">
+<link rel="stylesheet" href="dean.css?v=1">
 </head>
 <body>
 <header class="letterhead">
@@ -17,14 +18,17 @@
       <img src="assets/logo.jpg" alt="DAV University crest" class="crest">
       <div class="brand-text">
         <p class="uni-name">DAV UNIVERSITY,JALANDHAR</p>
-        <h1 class="dept-name" id="deptHeading">Student Timetable Portal</h1>
+        <h1 class="dept-name" id="deptHeading">Campus Online</h1>
         <p class="sys-name">Class timetable, faculty &amp; room information</p>
       </div>
     </div>
     <div class="letterhead-motto">
       <p class="motto-hindi">असतो मा सद्गमय</p>
       <p class="motto-en">"Lead us from darkness to light"</p>
-      <button class="logout-link" id="pwBtn" type="button" hidden>Change password</button><button class="logout-link" id="logoutBtn" type="button" hidden>Sign out</button>
+      <div class="acct">
+        <button class="logout-link" id="pwBtn" type="button" hidden>Change password</button>
+        <button class="logout-link" id="logoutBtn" type="button" hidden>Sign out</button>
+      </div>
     </div>
   </div>
   <div class="letterhead-rule"></div>
@@ -32,6 +36,7 @@
 <div class="app" id="app"></div>
 <footer class="site-foot"><p>DAV University, Jalandhar · All departments · Mon–Sat · Made by- Gopesh Aggarwal</p></footer>
 <dialog id="dlg" class="modal-card"></dialog>
-<script src="app.js"></script>
+<script src="dean.js?v=1"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

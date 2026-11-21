@@ -12,6 +12,8 @@ services:
     environment:
       ENV: prod
       SECRET_KEY: "${SECRET_KEY}"
+      DEAN_USERNAME: "${DEAN_USERNAME:-dean}"
+      DEAN_PASSWORD: "${DEAN_PASSWORD}"   # Dean's Office login (not tied to a department)
       DATABASE_URL: "postgresql+psycopg2://tt:${DB_PASSWORD}@db/tt"
       WORKERS: "4"
   nginx:

@@ -1,4 +1,4 @@
-import os, re, time
+import os, re, time, datetime as dt
 from sqlalchemy import create_engine, String, Integer, ForeignKey, UniqueConstraint, Index, select
 from sqlalchemy.orm import sessionmaker, DeclarativeBase, Mapped, mapped_column
 
@@ -86,6 +86,29 @@ class Notice(Base):
     posted: Mapped[str] = mapped_column(S(10), default="")
     pinned: Mapped[int] = mapped_column(Integer, default=0)
 
+class UniNotice(Base):  # posted by the Dean's Office; shown to every department. audience: all | students | faculty | admins
+    __tablename__ = "uni_notice"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(S(200))
+    body: Mapped[str] = mapped_column(S(2000), default="")
+    audience: Mapped[str] = mapped_column(S(10), default="all")
+    posted: Mapped[str] = mapped_column(S(10), default="")
+    pinned: Mapped[int] = mapped_column(Integer, default=0)
+
+class Sync(Base):  # when each department last published a timetable / student list / faculty list (shown to the Dean)
+    __tablename__ = "sync"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dept_id: Mapped[int] = mapped_column(ForeignKey("dept.id"))
+    kind: Mapped[str] = mapped_column(S(20))  # timetable | students | faculty
+    at: Mapped[str] = mapped_column(S(25), default="")
+    __table_args__ = (UniqueConstraint("dept_id", "kind"),)
+
+def stamp(db, d, kind):  # call inside the upload's transaction, before commit
+    row = db.scalar(select(Sync).where(Sync.dept_id == d, Sync.kind == kind))
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    if row: row.at = now
+    else: db.add(Sync(dept_id=d, kind=kind, at=now))
+
 # Small per-worker TTL cache: thousands of users read the same few sections, so this absorbs most DB load.
 _c = {}
 def cached(key, ttl, fn):
@@ -132,10 +155,21 @@ def periods(db, d):
         return {**DEFAULT_PERIODS, **m} if set(m.values()) <= set(DEFAULT_PERIODS.values()) else m
     return cached(("pm", d), 60, load)
 
+AUD = {"student": "students", "faculty": "faculty", "admin": "admins"}  # login role -> audience value
+
+def uni_notices(db, role):  # the Dean's notices for this kind of login (cached: every login of a role shares it)
+    def load():
+        q = select(UniNotice).where(UniNotice.audience.in_(["all", AUD.get(role, "all")])).order_by(UniNotice.pinned.desc(), UniNotice.id.desc()).limit(20)
+        return [dict(id=n.id, title=n.title, body=n.body, posted=n.posted, pinned=n.pinned, uni=True) for n in db.scalars(q)]
+    return cached(("un", role), 60, load)
+
 def notices(db, d, role):
     def load():
-        q = select(Notice).where(Notice.dept_id == d, Notice.audience.in_(["all", role + "s"])).order_by(Notice.pinned.desc(), Notice.id.desc()).limit(20)
-        return [dict(id=n.id, title=n.title, body=n.body, posted=n.posted, pinned=n.pinned) for n in db.scalars(q)]
+        q = select(Notice).where(Notice.dept_id == d, Notice.audience.in_(["all", AUD.get(role, "all")])).order_by(Notice.pinned.desc(), Notice.id.desc()).limit(20)
+        xs = uni_notices(db, role) + [dict(id=n.id, title=n.title, body=n.body, posted=n.posted, pinned=n.pinned, uni=False) for n in db.scalars(q)]
+        xs.sort(key=lambda n: (n["posted"], n["id"]), reverse=True)
+        xs.sort(key=lambda n: (-n["pinned"], not n["uni"]))  # pinned first, the Dean's notices ahead of the department's
+        return xs[:20]
     return cached(("nt", d, role), 60, load)
 
 # ---------------- classwork: assignments + syllabus covered (posted by the teacher for a section & subject) ----------------

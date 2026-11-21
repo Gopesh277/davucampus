@@ -107,5 +107,6 @@ def parse_students(wb):
         reg = _s(r["reg_no"]).upper()
         if not reg or not str(r["section"]).strip(): errs.append(f"Row {i}: reg_no / section missing"); continue
         base, g = split_section(r["section"])
-        out[reg] = dict(username=reg, name=str(r.get("name", "")).strip(), section=base, group=_s(r.get("group", "")).upper() or g)
+        nm = r.get("name") or r.get("student_name") or r.get("full_name") or r.get("candidate_name") or ""
+        out[reg] = dict(username=reg, name=re.sub(r"\s+", " ", str(nm)).strip(), section=base, group=_s(r.get("group", "")).upper() or g)
     return list(out.values()), errs
