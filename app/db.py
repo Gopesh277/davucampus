@@ -3,7 +3,9 @@ from sqlalchemy import create_engine, String, Integer, ForeignKey, UniqueConstra
 from sqlalchemy.orm import sessionmaker, DeclarativeBase, Mapped, mapped_column
 
 URL = os.getenv("DATABASE_URL", "sqlite:///./local.db")
-kw = {"connect_args": {"check_same_thread": False}} if URL.startswith("sqlite") else {"pool_size": 10, "max_overflow": 20, "pool_pre_ping": True}
+if os.getenv("ENV") == "prod" and URL.startswith("sqlite"): raise RuntimeError("Set DATABASE_URL to PostgreSQL in production")
+# per worker: 4 workers x (5 + 10) = 60 connections at most, under PostgreSQL's default max_connections of 100
+kw = {"connect_args": {"check_same_thread": False}} if URL.startswith("sqlite") else {"pool_size": 5, "max_overflow": 10, "pool_pre_ping": True, "pool_recycle": 1800}
 engine = create_engine(URL, **kw)
 Session = sessionmaker(engine, expire_on_commit=False)
 
@@ -116,6 +118,7 @@ def cached(key, ttl, fn):
     if v and time.time() - v[0] < ttl: return v[1]
     r = fn(); _c[key] = (time.time(), r); return r
 def bust(): _c.clear()
+def forget(key): _c.pop(key, None)
 
 def _row(x): return {c.name: getattr(x, c.name) for c in x.__table__.columns if c.name not in ("id", "dept_id")}
 

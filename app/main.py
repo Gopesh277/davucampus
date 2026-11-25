@@ -1,38 +1,62 @@
 import os, hmac, hashlib, time, datetime as dt
 from zoneinfo import ZoneInfo
 import jwt
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.security import HTTPBearer
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from typing import Annotated
+from pydantic import BaseModel, Field
 from sqlalchemy import select, delete, func
-from .db import Session, Dept, User, Slot, Faculty, Room, Notice, UniNotice, Assignment, Syllabus, cached, bust, stamp, uni_notices, timetable, ftimetable, lookups, notices, fkey, skey, classwork, teacher_classes, teacher_posts
+from .db import Session, Dept, User, Slot, Faculty, Room, Notice, UniNotice, Assignment, Syllabus, cached, bust, forget, stamp, uni_notices, timetable, ftimetable, lookups, notices, fkey, skey, classwork, teacher_classes, teacher_posts
 from . import chatbot, excel, dean
 
+PROD = os.getenv("ENV") == "prod"
 SECRET = os.getenv("SECRET_KEY", "dev-secret-change-me")
-if os.getenv("ENV") == "prod" and SECRET == "dev-secret-change-me": raise RuntimeError("Set SECRET_KEY")
 DEAN_USER = os.getenv("DEAN_USERNAME") or "dean"
 DEAN_PASS = os.getenv("DEAN_PASSWORD") or "dean_admin123"
-if os.getenv("ENV") == "prod" and DEAN_PASS == "dean_admin123": raise RuntimeError("Set DEAN_PASSWORD")
+if PROD:  # refuse to start with development defaults
+    if len(SECRET) < 32 or SECRET in ("dev-secret-change-me", "generate-with-openssl-rand-hex-32"): raise RuntimeError("Set SECRET_KEY (openssl rand -hex 32)")
+    if len(DEAN_PASS) < 12 or DEAN_PASS == "dean_admin123": raise RuntimeError("Set DEAN_PASSWORD (at least 12 characters)")
 TZ = ZoneInfo(os.getenv("APP_TZ", "Asia/Kolkata"))
+_today = lambda: dt.datetime.now(TZ).date().isoformat()  # the campus's date, not the server's (containers run on UTC)
 app = FastAPI(title="Campus Timetable", docs_url=None, redoc_url=None)
 app.add_middleware(GZipMiddleware, minimum_size=800)
 
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
+       "img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+@app.middleware("http")
+async def security_headers(req, call_next):
+    r = await call_next(req)
+    for k, v in (("Content-Security-Policy", CSP), ("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"), ("Referrer-Policy", "same-origin")):
+        r.headers.setdefault(k, v)
+    return r
+
 def hash_pw(p):
     s = os.urandom(16); return s.hex() + "$" + hashlib.pbkdf2_hmac("sha256", p.encode(), s, 200_000).hex()
+def hash_temp(p): return "!" + hash_pw(p)  # "!" = one-time password (new or reset admin): must be changed at the next sign-in
 def check_pw(p, h):
-    s, d = h.split("$"); return hmac.compare_digest(hashlib.pbkdf2_hmac("sha256", p.encode(), bytes.fromhex(s), 200_000).hex(), d)
+    s, d = h.lstrip("!").split("$"); return hmac.compare_digest(hashlib.pbkdf2_hmac("sha256", p.encode(), bytes.fromhex(s), 200_000).hex(), d)
 
 def get_db():
     with Session() as s: yield s
 def _decode(cr):
     try: return jwt.decode(cr.credentials, SECRET, algorithms=["HS256"])
     except Exception: raise HTTPException(401, "Session expired. Please sign in again.")
-def claims(cr=Depends(HTTPBearer(auto_error=False))):  # every department route (student / faculty / admin) -- the Dean has none of these
+_pv = lambda h: hashlib.sha256((h or "").encode()).hexdigest()[:16]  # password fingerprint in the token: a password change ends every older session
+def _user_state(uid):
+    with Session() as s:
+        u = s.get(User, uid)
+        return (_pv(u.pw_hash), u.dept_id, u.role) if u else None
+def session(cr=Depends(HTTPBearer(auto_error=False))):  # a department login that still exists, with the password and role it signed in with
     c = _decode(cr)
     if c["role"] == "dean": raise HTTPException(403, "The Dean's portal cannot use department routes.")
+    if cached(("u", c["uid"]), 30, lambda: _user_state(c["uid"])) != (c.get("pv"), c["dept"], c["role"]):
+        raise HTTPException(401, "Session expired. Please sign in again.")
+    return c
+def claims(c=Depends(session)):  # every department route (student / faculty / admin) -- the Dean has none of these
+    if c.get("pwc"): raise HTTPException(403, "Set your own password first.")
     return c
 def dean_only(cr=Depends(HTTPBearer(auto_error=False))):
     c = _decode(cr)
@@ -42,13 +66,15 @@ def admin(c=Depends(claims)):
     if c["role"] != "admin": raise HTTPException(403, "Admins only")
     return c
 
-class Login(BaseModel): dept: str = ""; username: str; password: str
-class Chat(BaseModel): message: str
-class AsgIn(BaseModel): section: str; subject: str; title: str; details: str = ""; due: str
-class SylIn(BaseModel): section: str; subject: str; topic: str; unit: str = ""; covered: str = ""
-class PwIn(BaseModel): current: str; new: str
-class NoticeIn(BaseModel): title: str; body: str = ""; audience: str = "all"; pinned: bool = False
-class WhoIn(BaseModel): faculty: list[str]; day: str | None = None; start: str | None = None; end: str | None = None
+def Str(n): return Annotated[str, Field(max_length=n)]  # every request field is bounded
+class Login(BaseModel): dept: Str(40) = ""; username: Str(100); password: Str(200)
+class Chat(BaseModel): message: Str(1000)
+class AsgIn(BaseModel): section: Str(200); subject: Str(300); title: Str(1000); details: Str(5000) = ""; due: Str(20)
+class SylIn(BaseModel): section: Str(200); subject: Str(300); topic: Str(2000); unit: Str(200) = ""; covered: Str(20) = ""
+class PwIn(BaseModel): current: Str(200); new: Str(200)
+class ResetIn(BaseModel): username: Str(100)
+class NoticeIn(BaseModel): title: Str(1000); body: Str(5000) = ""; audience: Str(20) = "all"; pinned: bool = False
+class WhoIn(BaseModel): faculty: list[Str(200)]; day: Str(20) | None = None; start: Str(20) | None = None; end: Str(20) | None = None
 
 @app.get("/api/health")
 def health(db=Depends(get_db)): db.execute(select(1)); return {"ok": True}
@@ -57,27 +83,46 @@ def health(db=Depends(get_db)): db.execute(select(1)); return {"ok": True}
 def departments(db=Depends(get_db)):
     return cached("depts", 300, lambda: [{"code": d.code, "name": d.name} for d in db.scalars(select(Dept).order_by(Dept.id))])
 
+# Failed sign-ins per (client IP, account), per worker: 10 in 5 minutes blocks that account from that IP only. A campus shares one IP,
+# so this never locks out the whole campus, and nobody elsewhere can lock an account (e.g. the Dean) out for everyone.
+_fails = {}
+def _ip(req): return req.headers.get("x-forwarded-for", "").split(",")[0].strip() or (req.client.host if req.client else "")  # nginx overwrites this header
+def _throttle(key):
+    now = time.time(); xs = [t for t in _fails.get(key, ()) if t > now - 300]
+    if xs: _fails[key] = xs
+    else: _fails.pop(key, None)
+    if len(xs) >= 10: raise HTTPException(429, "Too many failed sign-ins. Try again in a few minutes.")
+def _failed(key):
+    if len(_fails) > 50_000: _fails.clear()
+    _fails.setdefault(key, []).append(time.time())
+_DUMMY = hash_pw(os.urandom(8).hex())
+def _same(a, b): return hmac.compare_digest(a.strip().upper().encode(), b.strip().upper().encode())
+_temp = lambda h: h is None or h.startswith("!")  # no hash = first sign-in with their ID; "!" = one-time admin password
+def _token(u, dname):  # pwc: still on a first-sign-in / one-time password, so only /api/password is allowed until they set their own
+    tok = jwt.encode({"uid": u.id, "dept": u.dept_id, "role": u.role, "section": u.section, "group": u.group, "name": u.name or u.username, "dname": dname,
+                      "pv": _pv(u.pw_hash), "pwc": _temp(u.pw_hash), "exp": dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=12)}, SECRET, "HS256")
+    return {"token": tok, "role": u.role, "name": u.name or u.username, "dept": dname, "section": u.section, "must_change": _temp(u.pw_hash)}
+
 @app.post("/api/login")
-def login(b: Login, db=Depends(get_db)):
-    if hmac.compare_digest(b.username.strip().lower().encode(), DEAN_USER.lower().encode()): return dean_login(b)  # reserved username; no department needed
+def login(b: Login, req: Request, db=Depends(get_db)):
+    if hmac.compare_digest(b.username.strip().lower().encode(), DEAN_USER.lower().encode()): return dean_login(b, _ip(req))  # reserved username; no department needed
     if not b.dept: raise HTTPException(400, "Please select your department.")
-    d = db.scalar(select(Dept).where(Dept.code == b.dept)); un = b.username.strip(); u = None
+    un = b.username.strip(); key = (_ip(req), b.dept[:40], un.upper()[:60]); _throttle(key)
+    d = db.scalar(select(Dept).where(Dept.code == b.dept)); u = None
     if d:
         for name in (un.upper(), un):
             u = db.scalar(select(User).where(User.dept_id == d.id, User.username == name))
             if u: break
-    ok = bool(u) and (check_pw(b.password, u.pw_hash) if u.pw_hash else hmac.compare_digest(b.password.strip().upper(), u.username.upper()))
-    if not ok: raise HTTPException(401, "Wrong department, ID or password")
-    tok = jwt.encode({"uid": u.id, "dept": d.id, "role": u.role, "section": u.section, "group": u.group, "name": u.name or u.username, "dname": d.name,
-                      "exp": dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=12)}, SECRET, "HS256")
-    return {"token": tok, "role": u.role, "name": u.name or u.username, "dept": d.name, "section": u.section}
+    if u and u.pw_hash: ok = check_pw(b.password, u.pw_hash)
+    else:  # first sign-in: password = Reg No / Employee ID. Hash anyway, so an unknown ID takes as long as a real one.
+        check_pw(b.password, _DUMMY); ok = bool(u) and _same(b.password, u.username)
+    if not ok: _failed(key); raise HTTPException(401, "Wrong department, ID or password")
+    return _token(u, d.name)
 
-_dean_fails = []  # recent failed Dean sign-ins (per worker). A campus shares one IP, so only this one privileged account is throttled, never students.
-def dean_login(b):
-    now = time.time(); _dean_fails[:] = [t for t in _dean_fails if t > now - 300]
-    if len(_dean_fails) >= 10: raise HTTPException(429, "Too many failed Dean's Office sign-ins. Try again in a few minutes.")
+def dean_login(b, ip):
+    key = (ip, "dean"); _throttle(key)
     if not hmac.compare_digest(b.password.encode(), DEAN_PASS.encode()):
-        _dean_fails.append(now); raise HTTPException(401, "Wrong department, ID or password")
+        _failed(key); raise HTTPException(401, "Wrong department, ID or password")
     tok = jwt.encode({"uid": 0, "dept": None, "role": "dean", "section": "", "group": "", "name": "Dean's Office", "dname": "Dean's Office",
                       "exp": dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=12)}, SECRET, "HS256")
     return {"token": tok, "role": "dean", "name": "Dean's Office", "dept": "Dean's Office", "section": ""}
@@ -122,7 +167,7 @@ def post_assignment(b: AsgIn, c=Depends(teacher), db=Depends(get_db)):
     fk, m = _mine(db, c, b.section, b.subject)
     if not b.title.strip(): raise HTTPException(400, "Title is required")
     db.add(Assignment(dept_id=c["dept"], skey=m["skey"], section=m["section"], subject=m["subject"], code=m["code"], title=b.title.strip()[:200],
-                      details=b.details.strip()[:2000], due=_date(b.due), posted=dt.date.today().isoformat(), fkey=fk, teacher=c["name"]))
+                      details=b.details.strip()[:2000], due=_date(b.due), posted=_today(), fkey=fk, teacher=c["name"]))
     db.commit(); bust(); return {"ok": True}
 
 @app.post("/api/teacher/syllabus")
@@ -130,7 +175,7 @@ def post_syllabus(b: SylIn, c=Depends(teacher), db=Depends(get_db)):
     fk, m = _mine(db, c, b.section, b.subject)
     if not b.topic.strip(): raise HTTPException(400, "Topic is required")
     db.add(Syllabus(dept_id=c["dept"], skey=m["skey"], section=m["section"], subject=m["subject"], code=m["code"], unit=b.unit.strip()[:80],
-                    topic=b.topic.strip()[:500], covered=_date(b.covered, dt.date.today().isoformat()), fkey=fk, teacher=c["name"]))
+                    topic=b.topic.strip()[:500], covered=_date(b.covered, _today()), fkey=fk, teacher=c["name"]))
     db.commit(); bust(); return {"ok": True}
 
 @app.delete("/api/teacher/{kind}/{rid}")
@@ -140,13 +185,20 @@ def delete_post(kind: str, rid: int, c=Depends(teacher), db=Depends(get_db)):
     db.execute(delete(M).where(M.id == rid, M.dept_id == c["dept"], M.fkey == fkey(c["name"]))); db.commit(); bust(); return {"ok": True}
 
 # ---------------- department admin (scoped to the admin's own department) ----------------
-@app.post("/api/admin/password")  # only department admins can change a password (their own)
-def change_password(b: PwIn, c=Depends(admin), db=Depends(get_db)):
+@app.post("/api/password")  # every student / faculty / admin login changes its own password (required at first sign-in); returns a fresh token
+def change_password(b: PwIn, c=Depends(session), db=Depends(get_db)):
     u = db.get(User, c["uid"])
-    if not u or not u.pw_hash or not check_pw(b.current, u.pw_hash): raise HTTPException(400, "Current password is incorrect")
-    if len(b.new) < 8: raise HTTPException(400, "New password must be at least 8 characters")
-    if b.new == b.current or b.new.lower() == "admin123": raise HTTPException(400, "Choose a different, non-default password")
-    u.pw_hash = hash_pw(b.new); db.commit(); return {"ok": True}
+    if not u or not (check_pw(b.current, u.pw_hash) if u.pw_hash else _same(b.current, u.username)): raise HTTPException(400, "Current password is incorrect")
+    if not 8 <= len(b.new) <= 128: raise HTTPException(400, "New password must be 8 to 128 characters")
+    if b.new == b.current or b.new.lower() == "admin123" or _same(b.new, u.username): raise HTTPException(400, "Choose a different password (not your ID or a default)")
+    u.pw_hash = hash_pw(b.new); db.commit(); forget(("u", u.id))
+    return _token(u, c["dname"])
+
+@app.post("/api/admin/reset-password")  # a student / faculty member who forgot theirs goes back to the first-sign-in password (their ID)
+def reset_password(b: ResetIn, c=Depends(admin), db=Depends(get_db)):
+    u = db.scalar(select(User).where(User.dept_id == c["dept"], User.username == b.username.strip().upper(), User.role.in_(("student", "faculty"))))
+    if not u: raise HTTPException(404, "No student or faculty login with that ID in your department.")
+    u.pw_hash = None; db.commit(); forget(("u", u.id)); return {"ok": True}
 
 @app.get("/api/admin/stats")
 def stats(c=Depends(admin), db=Depends(get_db)):
@@ -233,7 +285,7 @@ def uni_for_admin(c=Depends(admin), db=Depends(get_db)): return uni_notices(db, 
 def add_notice(b: NoticeIn, c=Depends(admin), db=Depends(get_db)):
     if not b.title.strip(): raise HTTPException(400, "Title is required")
     aud = b.audience if b.audience in ("all", "students", "faculty") else "all"
-    db.add(Notice(dept_id=c["dept"], title=b.title.strip()[:200], body=b.body.strip()[:2000], audience=aud, pinned=int(b.pinned), posted=dt.date.today().isoformat()))
+    db.add(Notice(dept_id=c["dept"], title=b.title.strip()[:200], body=b.body.strip()[:2000], audience=aud, pinned=int(b.pinned), posted=_today()))
     db.commit(); bust(); return {"ok": True}
 
 @app.delete("/api/admin/announcement/{nid}")
@@ -266,7 +318,7 @@ def dean_notices(c=Depends(dean_only), db=Depends(get_db)):
 def dean_add_notice(b: NoticeIn, c=Depends(dean_only), db=Depends(get_db)):
     if not b.title.strip(): raise HTTPException(400, "Title is required")
     aud = b.audience if b.audience in ("all", "students", "faculty", "admins") else "all"
-    db.add(UniNotice(title=b.title.strip()[:200], body=b.body.strip()[:2000], audience=aud, pinned=int(b.pinned), posted=dt.date.today().isoformat()))
+    db.add(UniNotice(title=b.title.strip()[:200], body=b.body.strip()[:2000], audience=aud, pinned=int(b.pinned), posted=_today()))
     db.commit(); bust(); return {"ok": True}
 
 @app.delete("/api/dean/notice/{nid}")

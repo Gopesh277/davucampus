@@ -21,9 +21,8 @@ htmlcov/
 *.sqlite3
 pgdata/
 
-# Uploaded / exported Excel files (real student & faculty data). Demo files in demo_data/ are kept.
+# Uploaded / exported Excel files (real student & faculty data)
 *.xlsx
-!demo_data/*.xlsx
 ~$*.xlsx
 
 # Node (only used for local testing)
@@ -38,3 +37,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# TLS certificates / private keys
+certs/
+*.pem
